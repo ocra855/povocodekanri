@@ -1,0 +1,19 @@
+
+{
+  "name": "povo\\ult",
+  "short_name": "ぽぼると",
+  "description": "povoトッピング・コード管理アプリ",
+  "start_url": "./",
+  "scope": "./",
+  "display": "standalone",
+  "background_color": "#071329",
+  "theme_color": "#071329",
+  "icons": [
+    {
+      "src": "./icon.png",
+      "sizes": "1024x1024",
+      "type": "image/png",
+      "purpose": "any"
+    }
+  ]
+}
