@@ -1169,7 +1169,7 @@
               esc(c.code) +
               '" autocapitalize="off" autocomplete="off" spellcheck="false"><label>有効期限（コードを入力できる期限） *</label><input id="f-exp" type="datetime-local" value="' +
               (c.expiry ? loc(c.expiry) : "") +
-              '"><label>使用可能期間（日・使用後に使える期間）</label>' +
+              '"><label>使用可能期間（日・使用後に使える期間）</label><p class="sub">日数×24時間で計算します（7日＝168時間）。</p>' +
               durSel("f-dur", c.dur) +
               "<label>データ量</label>" +
               gbSel("f-gb", c.gb) +
@@ -1894,6 +1894,10 @@
           return "";
         }
         function bulk() {
+          if (!DB) {
+            toast("この環境では保存できません。通常のブラウズモードで開いてください。");
+            return;
+          }
           var found = [],
             dl = Array.from(
               new Set(
@@ -1909,7 +1913,7 @@
           sheet(
             '<h1>コードを追加</h1><label style="margin-top:0">メール本文などを貼り付け（複数コード可）</label><textarea id="b-txt" rows="5" placeholder="コードを含むメール本文をそのまま貼り付け"></textarea><div id="b-pv"></div><label>商品名 *</label><input id="b-name" list="bl" placeholder="例：7日間データ使い放題"><datalist id="bl">' +
               dl +
-              '</datalist><label>有効期限（コードを入力できる期限） *</label><input id="b-exp" type="datetime-local"><label>使用可能期間（コードを使ってから何日使えるか）</label>' +
+              '</datalist><label>有効期限（コードを入力できる期限） *</label><input id="b-exp" type="datetime-local"><label>使用可能期間（コードを使ってから通信できる期間）</label>' +
               durSel("b-dur", "") +
               "<label>データ量</label>" +
               gbSel("b-gb", "") +
@@ -2067,6 +2071,10 @@
               $("#err").textContent = "コード・商品名・有効な有効期限を入力してください。";
               return;
             }
+            if (($("#b-price").value !== "") && (!Number.isInteger(Number($("#b-price").value)) || Number($("#b-price").value) < 0)) {
+              $("#err").textContent = "金額は0以上の整数で入力してください。";
+              return;
+            }
             if ($("#b-pm").value === "total" && (+$("#b-div").value || chk.length) < chk.length) {
               $("#err").textContent = "割る数は登録件数以上にしてください。";
               return;
@@ -2103,11 +2111,19 @@
           };
         }
         function save(id) {
+          if (!DB) {
+            $("#err").textContent = "この環境では保存できません。通常のブラウズモードで開いてください。";
+            return;
+          }
           var n = $("#f-name").value.trim(),
             cd = $("#f-code").value.trim(),
             e = $("#f-exp").value;
           if (!n || !cd || !e || isNaN(new Date(e).getTime())) {
             $("#err").textContent = "商品名・コード・有効な有効期限は必須です。";
+            return;
+          }
+          if (( $("#f-price").value !== "") && (!Number.isInteger(Number($("#f-price").value)) || Number($("#f-price").value) < 0)) {
+            $("#err").textContent = "金額は0以上の整数で入力してください。";
             return;
           }
           if (
@@ -2240,7 +2256,7 @@
         }
         function restore() {
           sheet(
-            '<h1>バックアップを読み込む</h1><p class="sub">JSONファイルを選ぶか、JSONを貼り付けてください。同じIDのコードは上書きされます。</p><input type="file" id="rf" accept=".json,application/json"><label>またはJSONを貼り付け</label><textarea id="rt" rows="6"></textarea><p class="sub" id="err" style="color:var(--ex)"></p><div class="acts"><button class="btn" data-close>キャンセル</button><button class="btn p" id="rg">復元する</button></div>'
+            '<h1>バックアップを読み込む</h1><p class="sub">読み込みは既存データへの追加・更新です。バックアップにないコードは削除されません。同じIDは上書きされ、同じコードの別IDは重複登録しません。</p><input type="file" id="rf" accept=".json,application/json"><label>またはJSONを貼り付け</label><textarea id="rt" rows="6"></textarea><p class="sub" id="err" style="color:var(--ex)"></p><div class="acts"><button class="btn" data-close>キャンセル</button><button class="btn p" id="rg">内容を確認</button></div>'
           );
           $("#rf").onchange = function (e) {
             var f = e.target.files[0];
@@ -2251,26 +2267,55 @@
             };
             r.readAsText(f);
           };
+          var restorePlan = null;
           $("#rg").onclick = function () {
+            if (!DB) {
+              $("#err").textContent = "この環境では保存できません。通常のブラウズモードで開いてください。";
+              return;
+            }
             try {
               var d = JSON.parse($("#rt").value);
-              if (!d || !Array.isArray(d.codes)) throw 0;
-              var ps = d.codes
-                .filter(function (c) {
-                  return c && c.id && c.name && c.code && c.expiry;
-                })
-                .map(put);
-              if (d.settings) {
-                S = Object.assign(S, d.settings);
-                saveS().then(applyTheme);
+              if (!d || d.app !== "povo-code-manager" || !Array.isArray(d.codes)) throw 0;
+              var valid = d.codes.filter(function (c) {
+                return c && typeof c.id === "string" && c.id && typeof c.name === "string" && c.name.trim() && typeof c.code === "string" && c.code.trim() && c.expiry && Number.isFinite(new Date(c.expiry).getTime());
+              });
+              var invalid = d.codes.length - valid.length;
+              var seenIds = {}, seenCodes = {}, overwrite = 0, duplicate = 0;
+              valid = valid.filter(function (c) {
+                if (seenIds[c.id]) return false;
+                seenIds[c.id] = true;
+                if (codes.some(function (x) { return x.id === c.id; })) overwrite++;
+                var key = c.code.replace(/\s/g, "").toUpperCase();
+                if (seenCodes[key] || codes.some(function (x) { return x.id !== c.id && x.code.replace(/\s/g, "").toUpperCase() === key; })) {
+                  duplicate++;
+                  return false;
+                }
+                seenCodes[key] = true;
+                return true;
+              });
+              var settings = d.settings && typeof d.settings === "object" ? d.settings : null;
+              if (!restorePlan || restorePlan.source !== $("#rt").value) {
+                restorePlan = { source: $("#rt").value, codes: valid, settings: settings, overwrite: overwrite, duplicate: duplicate };
+                $("#err").textContent = "確認：有効 " + valid.length + "件を取り込み（ID上書き " + overwrite + "件、重複コード除外 " + duplicate + "件、不正データ除外 " + invalid + "件）。実行するには「この内容で復元」をもう一度押してください。";
+                $("#rg").textContent = "この内容で復元";
+                return;
               }
-              Promise.all(ps).then(
+              var plan = restorePlan;
+              $("#rg").disabled = true;
+              Promise.all(plan.codes.map(put)).then(function () {
+                if (plan.settings) {
+                  S = Object.assign(S, plan.settings);
+                  return saveS();
+                }
+              }).then(
                 function () {
+                  applyTheme();
                   close();
                   render();
-                  toast("✓ " + ps.length + "件を復元しました");
+                  toast("✓ " + plan.codes.length + "件を復元しました");
                 },
                 function () {
+                  $("#rg").disabled = false;
                   $("#err").textContent = "保存に失敗しました。空き容量等をご確認ください。";
                 }
               );
@@ -2328,6 +2373,10 @@
             return;
           }
           if (t.closest("[data-add]")) {
+            if (!DB) {
+              toast("保存できない環境です。通常のブラウズモードで開いてください。");
+              return;
+            }
             bulk();
             return;
           }
