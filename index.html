@@ -658,7 +658,7 @@
         var DB = null,
           mem = { codes: [], meta: {} },
           codes = [],
-          S = { near: 24, mask: true },
+          S = { near: 24, mask: true, remDays: [0, 1] },
           view = "home",
           q = "",
           flt = "all",
@@ -673,6 +673,15 @@
           return String(s == null ? "" : s).replace(/[&<>"']/g, function (c) {
             return { "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[c];
           });
+        }
+        function normalizeSettings(input) {
+          var v = Object.assign({ near: 24, mask: true, theme: "", remDays: [0, 1] }, input || {}),
+            allowed = [0, 1, 3, 7];
+          v.near = Number.isFinite(+v.near) && +v.near >= 1 ? Math.floor(+v.near) : 24;
+          v.mask = !!v.mask;
+          v.theme = ["", "light", "dark"].indexOf(v.theme) >= 0 ? v.theme : "";
+          v.remDays = Array.isArray(v.remDays) ? Array.from(new Set(v.remDays.map(Number).filter(function (n) { return allowed.indexOf(n) >= 0; }))) : [0, 1];
+          return v;
         }
         /* ---- storage ---- */
         function open() {
@@ -709,7 +718,7 @@
                 codes = r.result || [];
                 var m = DB.transaction("meta").objectStore("meta").get("settings");
                 m.onsuccess = function () {
-                  if (m.result) S = Object.assign(S, m.result);
+                  if (m.result) S = normalizeSettings(m.result);
                   res();
                 };
                 m.onerror = function () {
@@ -1004,7 +1013,11 @@
               S.near +
               '"><label><input id="mask" type="checkbox" style="width:auto;min-height:0;margin-right:8px" ' +
               (S.mask ? "checked" : "") +
-              '>未使用コードをモザイク表示（表示後8秒で自動的に隠す）</label></div><h2>データ</h2><div class="card"><div class="acts" style="margin:0"><button class="btn" data-export>バックアップを書き出す</button><button class="btn" data-imp>バックアップを読み込む</button><button class="btn d" data-wipe>全データ削除</button></div><p class="sub">データはこの端末のブラウザ内（IndexedDB）にのみ保存され、外部には送信されません。バックアップにはコードが含まれます。</p></div><h2>povo コード管理アプリ</h2><div class="card sub">povo\\ult（ ぽぼると ）</div>';
+              '>未使用コードをモザイク表示（表示後8秒で自動的に隠す）</label><label>通知の既定タイミング</label><div id="rem-defaults">' +
+              [[0, "有効期限当日"], [1, "1日前"], [3, "3日前"], [7, "7日前"]].map(function (o) {
+                return '<label style="display:flex;gap:8px;align-items:center;margin:2px 0;color:var(--ink);font-size:15px"><input type="checkbox" data-remday="' + o[0] + '" style="width:auto;min-height:0" ' + ((S.remDays || [0, 1]).indexOf(o[0]) >= 0 ? "checked" : "") + '>' + o[1] + '</label>';
+              }).join("") +
+              '</div><p class="sub">通知時刻は各コードの使用期限の時刻が初期値になります。作成画面で個別に変更できます。</p></div><h2>データ</h2><div class="card"><div class="acts" style="margin:0"><button class="btn" data-export>バックアップを書き出す</button><button class="btn" data-imp>バックアップを読み込む</button><button class="btn d" data-wipe>全データ削除</button></div><p class="sub">データはこの端末のブラウザ内にのみ保存され、外部には送信されません。バックアップにはコードが含まれます。</p></div><h2>povo コード管理アプリ</h2><div class="card sub">povo\\ult（ ぽぼると ）</div>';
           }
           app.innerHTML =
             (DB
@@ -1530,7 +1543,7 @@
           var f = function () {
             codes = [];
             mem.codes = [];
-            S = { near: 24, mask: false, theme: "" };
+            S = { near: 24, mask: false, theme: "", remDays: [0, 1] };
             applyTheme();
           };
           if (!DB) {
@@ -1581,6 +1594,7 @@
             "BEGIN:VCALENDAR",
             "VERSION:2.0",
             "PRODID:-//povo Code Manager//JP",
+            "CALSCALE:GREGORIAN",
             "BEGIN:" + tg,
             "UID:" + c.id + "-" + type + "@povo-code-manager",
             "DTSTAMP:" + z(new Date()),
@@ -1602,7 +1616,23 @@
             );
           });
           L.push("END:" + tg, "END:VCALENDAR");
-          return L.join("\r\n");
+          function fold(line) {
+            var out = [], part = "", bytes = 0;
+            Array.from(line).forEach(function (ch) {
+              var size = typeof TextEncoder !== "undefined" ? new TextEncoder().encode(ch).length : unescape(encodeURIComponent(ch)).length;
+              if (bytes + size > 73) {
+                out.push(part);
+                part = " " + ch;
+                bytes = 1 + size;
+              } else {
+                part += ch;
+                bytes += size;
+              }
+            });
+            out.push(part);
+            return out.join("\r\n");
+          }
+          return L.map(fold).join("\r\n");
         }
         function remind(id) {
           var c = codes.find(function (x) {
@@ -1613,6 +1643,8 @@
             needStart(c);
             return;
           }
+          var expiryDate = new Date(endOf(c)),
+            defaultTime = String(expiryDate.getHours()).padStart(2, "0") + ":" + String(expiryDate.getMinutes()).padStart(2, "0");
           sheet(
             '<h1>期限を通知に追加</h1><p class="sub">' +
               esc(c.name) +
@@ -1624,7 +1656,7 @@
                   fd(c.cal.at) +
                   "）。カレンダーへの取り込みが完了したかは、このアプリから確認できません。</p>"
                 : "") +
-              '<label>登録先</label><select id="r-t"><option value="cal">カレンダー（予定）</option><option value="rem">リマインダー（タスク）</option></select><label>通知するタイミング</label><div id="r-o">' +
+              '<p class="sub">登録先：カレンダー（予定）</p><p class="sub">.icsファイルを作成した後、カレンダーで読み込んでください。この画面からカレンダーへ直接登録はできません。</p><label>通知するタイミング</label><div id="r-o">' +
               [
                 [0, "有効期限当日"],
                 [1, "1日前"],
@@ -1636,14 +1668,14 @@
                     '<label style="display:flex;gap:8px;align-items:center;margin:2px 0;color:var(--ink);font-size:15px"><input type="checkbox" value="' +
                     o[0] +
                     '" style="width:auto;min-height:0" ' +
-                    (i < 2 ? "checked" : "") +
+                    ((S.remDays || [0, 1]).indexOf(o[0]) >= 0 ? "checked" : "") +
                     ">" +
                     o[1] +
                     "</label>"
                   );
                 })
                 .join("") +
-              '</div><label>通知時刻</label><input id="r-h" type="time" value="09:00"><p class="sub">タイトルは商品名、メモ欄に容量・有効期限・使用可能期間を記載します。.icsファイルを作成してカレンダー等に取り込みます。</p><p class="sub" id="err" style="color:var(--ex)"></p><div class="acts"><button class="btn" data-close>キャンセル</button><button class="btn" id="r-cp">内容をコピー</button><button class="btn p" id="r-go">.icsを作成</button></div>'
+              '</div><label>通知時刻</label><input id="r-h" type="time" value="' + defaultTime + '"><p class="sub">初期時刻はこのコードの使用期限と同じです。タイトルは商品名、メモ欄に容量・有効期限・使用可能期間を記載します。</p><p class="sub" id="err" style="color:var(--ex)"></p><div class="acts"><button class="btn" data-close>キャンセル</button><button class="btn" id="r-cp">内容をコピー</button><button class="btn p" id="r-go">.icsを作成</button></div>'
           );
           function plan() {
             var offs = Array.from(document.querySelectorAll("#r-o input:checked")).map(function (x) {
@@ -1659,7 +1691,7 @@
               .map(function (n) {
                 var d = new Date(endOf(c));
                 d.setDate(d.getDate() - n);
-                d.setHours(+hm[0], +hm[1], 0, 0);
+                if (hm[0] + ":" + hm[1] !== defaultTime) d.setHours(+hm[0], +hm[1], 0, 0);
                 return d;
               })
               .filter(function (d) {
@@ -1675,23 +1707,27 @@
           $("#r-cp").onclick = function () {
             var al = plan();
             if (!al) return;
-            var t = $("#r-t").value;
-            copy(t === "rem" ? c.name + " の期限確認\n" + reminderText(c, al) : buildIcs(c, "cal", al));
+            copy(buildIcs(c, "cal", al));
           };
-          $("#r-go").onclick = function () {
+          $("#r-go").onclick = async function () {
             var al = plan();
             if (!al) return;
             try {
-              var a = document.createElement("a");
-              a.href = URL.createObjectURL(new Blob([buildIcs(c, $("#r-t").value, al)], { type: "text/calendar" }));
-              a.download = "povo-" + c.id + ".ics";
-              document.body.appendChild(a);
-              a.click();
-              a.remove();
-              setTimeout(function () {
-                URL.revokeObjectURL(a.href);
-              }, 1000);
-              toast(".icsを作成しました");
+              var blob = new Blob([buildIcs(c, "cal", al)], { type: "text/calendar;charset=utf-8" }),
+                file = new File([blob], "povo-" + c.id + ".ics", { type: "text/calendar" });
+              if (navigator.canShare && navigator.canShare({ files: [file] }) && navigator.share) {
+                await navigator.share({ title: c.name + " の期限通知", files: [file] });
+                toast("共有先で.icsを読み込んでください");
+              } else {
+                var a = document.createElement("a");
+                a.href = URL.createObjectURL(blob);
+                a.download = "povo-" + c.id + ".ics";
+                document.body.appendChild(a);
+                a.click();
+                a.remove();
+                setTimeout(function () { URL.revokeObjectURL(a.href); }, 1000);
+                toast(".icsを作成しました。カレンダーまたはリマインダーで読み込んでください");
+              }
               put(
                 Object.assign({}, c, {
                   cal: {
@@ -1704,6 +1740,7 @@
                 })
               ).then(render, function () {});
             } catch (e) {
+              if (e && e.name === "AbortError") return;
               $("#err").textContent = "この環境ではファイルを保存できません。「内容をコピー」を使ってください。";
             }
           };
@@ -2304,7 +2341,7 @@
               $("#rg").disabled = true;
               Promise.all(plan.codes.map(put)).then(function () {
                 if (plan.settings) {
-                  S = Object.assign(S, plan.settings);
+                  S = normalizeSettings(Object.assign({}, S, plan.settings));
                   return saveS();
                 }
               }).then(
@@ -2535,6 +2572,10 @@
             S.mask = t.checked;
             saveS();
             if (view === "hist") render();
+          }
+          if (t.matches && t.matches("[data-remday]")) {
+            S.remDays = Array.from(document.querySelectorAll("[data-remday]:checked")).map(function (x) { return +x.getAttribute("data-remday"); });
+            saveS();
           }
         });
 
