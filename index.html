@@ -1038,24 +1038,30 @@
           var priced = codes.filter(function (c) {
             return c.price !== "" && c.price != null && Number.isFinite(Number(c.price)) && Number(c.price) >= 0;
           });
-          function amount(a) {
-            return a.reduce(function (s, c) {
-              return s + Number(c.price);
-            }, 0);
-          }
           function dateOf(c) {
             var d = new Date(c.boughtAt || c.createdAt || 0).getTime();
             return Number.isFinite(d) ? d : 0;
           }
+          var purchases = [], purchaseGroups = {};
+          codes.forEach(function (c) {
+            if (c.purchaseId && c.purchaseTotal !== "" && Number.isFinite(Number(c.purchaseTotal)) && Number(c.purchaseTotal) >= 0) {
+              if (!purchaseGroups[c.purchaseId]) {
+                purchaseGroups[c.purchaseId] = true;
+                purchases.push({ name: c.name || "商品名未設定", amount: Number(c.purchaseTotal), date: dateOf(c) });
+              }
+            } else if (c.price !== "" && c.price != null && Number.isFinite(Number(c.price)) && Number(c.price) >= 0) {
+              purchases.push({ name: c.name || "商品名未設定", amount: Number(c.price), date: dateOf(c) });
+            }
+          });
           var month = new Date(now);
           month.setDate(1);
           month.setHours(0, 0, 0, 0);
           var year = new Date(new Date(now).getFullYear(), 0, 1).getTime();
-          var m = priced.filter(function (c) {
-            return dateOf(c) >= month.getTime() && dateOf(c) <= now;
+          var m = purchases.filter(function (p) {
+            return p.date >= month.getTime() && p.date <= now;
           });
-          var y = priced.filter(function (c) {
-            return dateOf(c) >= year && dateOf(c) <= now;
+          var y = purchases.filter(function (p) {
+            return p.date >= year && p.date <= now;
           });
           var gbSum = 0,
             gbCost = 0;
@@ -1067,10 +1073,10 @@
             }
           });
           var by = {};
-          priced.forEach(function (c) {
-            var k = c.name || "商品名未設定";
+          purchases.forEach(function (p) {
+            var k = p.name;
             if (!by[k]) by[k] = { sum: 0, count: 0 };
-            by[k].sum += Number(c.price);
+            by[k].sum += p.amount;
             by[k].count++;
           });
           var top = Object.keys(by)
@@ -1086,11 +1092,11 @@
           };
           return (
             '<h2>購入統計</h2><div class="stats" style="grid-template-columns:repeat(2,minmax(0,1fr))"><div class="stat big"><b style="font-size:22px">' +
-            money(amount(priced)) +
+            money(purchases.reduce(function (s, p) { return s + p.amount; }, 0)) +
             '</b><span>累計購入金額</span></div><div class="stat"><b style="font-size:22px">' +
-            money(amount(m)) +
+            money(m.reduce(function (s, p) { return s + p.amount; }, 0)) +
             '</b><span>今月の購入金額</span></div><div class="stat"><b style="font-size:22px">' +
-            money(amount(y)) +
+            money(y.reduce(function (s, p) { return s + p.amount; }, 0)) +
             '</b><span>今年の購入金額</span></div><div class="stat"><b style="font-size:22px">' +
             (gbSum ? money(gbCost / gbSum) : "—") +
             "</b><span>1GBあたり（加重平均）</span></div></div>" +
@@ -1709,25 +1715,18 @@
             if (!al) return;
             copy(buildIcs(c, "cal", al));
           };
-          $("#r-go").onclick = async function () {
+          $("#r-go").onclick = function () {
             var al = plan();
             if (!al) return;
             try {
-              var blob = new Blob([buildIcs(c, "cal", al)], { type: "text/calendar;charset=utf-8" }),
-                file = new File([blob], "povo-" + c.id + ".ics", { type: "text/calendar" });
-              if (navigator.canShare && navigator.canShare({ files: [file] }) && navigator.share) {
-                await navigator.share({ title: c.name + " の期限通知", files: [file] });
-                toast("共有先で.icsを読み込んでください");
-              } else {
-                var a = document.createElement("a");
-                a.href = URL.createObjectURL(blob);
-                a.download = "povo-" + c.id + ".ics";
-                document.body.appendChild(a);
-                a.click();
-                a.remove();
-                setTimeout(function () { URL.revokeObjectURL(a.href); }, 1000);
-                toast(".icsを作成しました。カレンダーまたはリマインダーで読み込んでください");
-              }
+              var a = document.createElement("a");
+              a.href = URL.createObjectURL(new Blob([buildIcs(c, "cal", al)], { type: "text/calendar;charset=utf-8" }));
+              a.download = "povo-" + c.id + ".ics";
+              document.body.appendChild(a);
+              a.click();
+              a.remove();
+              setTimeout(function () { URL.revokeObjectURL(a.href); }, 1000);
+              toast(".icsを作成しました");
               put(
                 Object.assign({}, c, {
                   cal: {
@@ -1740,7 +1739,6 @@
                 })
               ).then(render, function () {});
             } catch (e) {
-              if (e && e.name === "AbortError") return;
               $("#err").textContent = "この環境ではファイルを保存できません。「内容をコピー」を使ってください。";
             }
           };
@@ -2117,6 +2115,9 @@
               return;
             }
             var base = Date.now(),
+              totalMode = $("#b-pm").value === "total" && $("#b-price").value !== "",
+              batchId = totalMode ? uid() : "",
+              purchaseTotal = totalMode ? Number($("#b-price").value) : "",
               amt = splitPrice($("#b-price").value, $("#b-pm").value, chk.length, +$("#b-div").value || chk.length);
             Promise.all(
               chk.map(function (cd, i) {
@@ -2127,6 +2128,8 @@
                   expiry: new Date(e).toISOString(),
                   boughtAt: "",
                   price: amt[i],
+                  purchaseId: batchId,
+                  purchaseTotal: purchaseTotal,
                   memo: $("#b-memo").value,
                   dur: parseFloat($("#b-dur").value) || 0,
                   gb: $("#b-gb").value,
